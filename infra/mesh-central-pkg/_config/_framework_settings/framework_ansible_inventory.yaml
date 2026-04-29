@@ -1,0 +1,36 @@
+# Default options for _generate-inventory.
+# All keys map directly to CLI flags; values here are defaults used when
+# the script is run without explicit flags.
+framework_ansible_inventory:
+  # Terraform module name substrings that identify a unit as an Ansible host.
+  # A unit is included iff its terragrunt.hcl source path contains one of
+  # these strings. Override per-unit with _is_host: true/false in config_params.
+  modules_to_include:
+  - proxmox_virtual_environment_vm
+  - maas_machine
+
+  # Where to write the generated inventory file (relative to the repo root).
+  output_file: ./ansible/inventory/hosts.yml
+
+  # Verify SSH reachability for each host before writing the inventory.
+  ssh_check: true
+
+  # Exclude hosts that fail the SSH check from the output entirely.
+  exclude_unreachable: false
+
+  # Comma-separated role names to emit as host groups. Empty = all roles.
+  roles: ''
+
+  # When true, omit hosts with no matched role.
+  only_matched: false
+
+  # How to handle Terraform provider connection vars in the inventory:
+  #   omit    — drop them (default)
+  #   include — emit as normal host vars
+  #   comment — write as commented-out lines
+  provider_keys: omit
+
+  # How to handle config params whose value is null/None:
+  #   omit    — drop them (default)
+  #   comment — write as commented-out lines with value ''
+  null_vars: omit

@@ -1,0 +1,12 @@
+gcp_seed:
+  project:
+    id: pwy-homelab-20260208-2054
+    environment: Development
+
+  _region: us-central1
+
+  # impersonation: no key file created; local gcloud session impersonates the SA.
+  # keyfile: creates a JSON key file (legacy).
+  auth_method: impersonation
+
+  state_bucket: seed-tf-state-pwy-homelab-20260308-1700

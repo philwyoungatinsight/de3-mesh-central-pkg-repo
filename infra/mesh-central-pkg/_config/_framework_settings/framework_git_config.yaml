@@ -1,0 +1,34 @@
+framework_git_config:
+  git-auth:
+    # mode:
+    #   never           — auth check is never run automatically
+    #   every_n_minutes — run if last-check is older than interval_minutes
+    mode: every_n_minutes
+    interval_minutes: 60
+
+    # validation_type:
+    #   current-repos — scan git remotes + framework_repo_manager.yaml for unique
+    #                   hostnames and check auth for each known host
+    validation_type: current-repos
+
+    # on_failure:
+    #   warn  — print warning but exit 0 (non-blocking)
+    #   fail  — exit 1 (blocks setup/build)
+    on_failure: warn
+
+    # Maps git hostname → CLI tool to check auth with.
+    # Add entries for self-hosted GitLab/GitHub instances as needed.
+    host_type_map:
+      github.com: gh
+      gitlab.com: glab
+
+    # Expected gh token scopes. Reported missing scopes are shown in the warning/error.
+    gh_scopes:
+      - repo
+      - read:org
+      - workflow
+      - gist
+
+    # If true, instruct gh/glab to store tokens in the OS keychain (the default).
+    # Set to false in headless/CI environments where keychain is unavailable.
+    prefer_keychain: true

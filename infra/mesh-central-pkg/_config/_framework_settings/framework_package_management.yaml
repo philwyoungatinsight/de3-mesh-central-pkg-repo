@@ -1,0 +1,10 @@
+framework_package_management:
+
+  # Base directory under $HOME where repos are cloned (required).
+  # Each clone lands at $HOME/<external_package_dir>/<slug>/<ref>/
+  #
+  # '.'   — repos go directly under $HOME (e.g. $HOME/<slug>/<ref>/)
+  # 'git' — repos go under $HOME/git/<slug>/<ref>/
+  #
+  external_package_dir: 'git/de3-ext-packages'
+

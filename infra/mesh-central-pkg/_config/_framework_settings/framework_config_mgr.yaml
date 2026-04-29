@@ -1,0 +1,30 @@
+# config-mgr behaviour.
+# config-mgr is the authoritative tool for reading, writing, and merging package
+# config. It pre-processes all source config into $_DYNAMIC_DIR/config/ so that
+# consumers (root.hcl, Ansible, inventory generation) can read plain YAML without
+# needing to handle SOPS or config_source routing themselves.
+framework_config_mgr:
+
+  # How config_params from a source package and its config_source package are combined.
+  #
+  # interleave (default):
+  #   Entries from both the source package and its config_source package participate
+  #   in ancestor-merge together. The combined key set is merged top-down; config_source
+  #   entries win over source-package entries at the same path depth. Source package
+  #   structural defaults (_provider, _wave, _skip_on_build, etc.) remain effective
+  #   without being duplicated in the config_source file.
+  #   Use this when the source package ships meaningful structural defaults and the
+  #   config_source package supplies deployment-specific values on top.
+  #
+  # source_only:
+  #   Only the config_source package's config_params are used. The source package's
+  #   own config_params are ignored entirely. Use this when the deployment package
+  #   fully owns all config for an imported package and you do not want any structural
+  #   defaults leaking from the source package (e.g. after a full migration of a
+  #   package's config into the deployment repo).
+  merge_method: interleave
+
+  # Whether to produce output during generate when packages are up to date.
+  # silent suppresses all output except errors. verbose prints one line per package
+  # processed (including skipped). normal (default) prints only regenerated packages.
+  output_mode: normal

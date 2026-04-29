@@ -1,0 +1,9 @@
+# Config linter run by set_env.sh each time it is sourced.
+# Checks YAML conventions (key naming, reserved words, etc.) across all
+# package config files and prints warnings inline.
+framework_validate_config:
+  #mode: always
+  #mode: disabled
+  mode: every_n_minutes
+  interval_minutes: 60
+  show_individual_files_checked: false

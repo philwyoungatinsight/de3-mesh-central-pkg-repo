@@ -1,0 +1,3 @@
+jmespath
+requests
+websockets

@@ -1,0 +1,46 @@
+---
+# Play 1: Run on localhost.
+# Loads the full framework config (public YAML + SOPS secrets) using the
+# config_base role, then exposes MeshCentral-specific config as a fact
+# (mesh_central_config) for the remote play.
+- name: Load framework config
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Load config_base role
+      ansible.builtin.include_role:
+        name: "{{ lookup('env', '_ANSIBLE_ROLES_DIR') }}/config_base"
+    - name: Discover MeshCentral configure-server path (active, non-skipped)
+      ansible.builtin.set_fact:
+        _mc_cs_path: >-
+          {%- set candidates = [] -%}
+          {%- for path in (_tg_providers['null']['config_params'] | default({})).keys()
+              | select('match', '.*/mesh-central/configure-server$') | list -%}
+            {%- set merged = path | ancestor_merge(_all_config_params) -%}
+            {%- if not (merged.skip | default(false)) -%}
+              {%- set _ = candidates.append(path) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ candidates | first | default('') }}
+
+    - name: Capture MeshCentral config as a fact for remote plays
+      ansible.builtin.set_fact:
+        mesh_central_config: >-
+          {{
+            (_mc_cs_path | ancestor_merge(_all_config_params)) |
+            combine(
+              _mc_cs_path | ancestor_merge(_all_secret_params)
+            )
+          }}
+
+# Play 2: SSH into every host in the 'mesh_central' group and install MeshCentral.
+# The 'mesh_central' group is populated by generate_ansible_inventory from VMs
+# tagged 'role_mesh_central' in pwy-home-lab-pkg.yaml.
+- name: Install MeshCentral
+  hosts: mesh_central
+  gather_facts: true
+
+  tasks:
+    - name: Install MeshCentral
+      ansible.builtin.include_tasks: tasks/install-mesh-central.yaml

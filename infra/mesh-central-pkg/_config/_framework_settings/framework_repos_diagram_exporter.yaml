@@ -1,0 +1,42 @@
+framework_repos_diagram_exporter:
+  # Directory under $HOME where repos are cloned for scanning.
+  # Completely independent of framework_package_management.external_package_dir.
+  repos_cache_dir: 'git/fw_repos_diagram_exporter_cache'
+
+  # Formats to render on --list. All rendered simultaneously to config/tmp/fw_repos_diagram_exporter/.
+  # Valid values: yaml, json, text, dot
+  output_formats:
+    - yaml
+    - text
+    - json
+    - dot
+
+  # Repo lineage visualization (from framework_repo_manager.yaml).
+  # Annotates generated repos with "created by: <source>" in text output.
+  # Draws bold green "creates" cluster edges in DOT output.
+  show_repo_lineage: true
+
+  # Capability visualization.
+  # show_capability_deps: draw edges between packages based on _requires_capability.
+  # show_capabilities_in_diagram: include capability strings as labels on package nodes/lines.
+  show_capability_deps: true
+  show_capabilities_in_diagram: true
+
+  # Probe each repo URL with `git ls-remote` during a scan to detect unreachable
+  # remotes. Results are stored as `accessible: true/false` in the state file and
+  # shown in the diagram when "Mark inaccessible repos" is enabled in the GUI.
+  # Disabled by default because it adds one network round-trip per repo URL.
+  check_accessibility: false
+
+  # Auto-refresh behaviour.
+  auto_refresh:
+    # mode:
+    #   never      — only --refresh flag triggers a scan
+    #   fixed_time — scan if last-refresh is older than min_interval_seconds
+    #   file_age   — scan if any _framework_settings/*.yaml is newer than last-refresh
+    #                AND last-refresh age > min_interval_seconds (rate-limit gate)
+    mode: file_age
+    min_interval_seconds: 10
+    # If true, check-and-possibly-refresh before any --list render.
+    # Override per-invocation with --auto-refresh / --no-auto-refresh.
+    auto_refresh_on_render: true

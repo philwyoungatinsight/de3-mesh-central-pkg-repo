@@ -1,0 +1,5 @@
+# Capabilities provided by the framework, or satisfied externally.
+# See: _provides_capability / _requires_capability in per-package config.
+# Supports semver (e.g. 1.2.3) and scalver (e.g. 1.20260419.1).
+framework_external_capabilities:
+  - framework-code: 1.20260419.1

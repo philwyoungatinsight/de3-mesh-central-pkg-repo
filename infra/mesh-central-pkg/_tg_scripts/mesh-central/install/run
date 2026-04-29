@@ -1,0 +1,234 @@
+#!/bin/bash
+# install-mesh-central/run
+#
+# Installs MeshCentral on all hosts in the 'mesh_central' Ansible inventory group.
+# MeshCentral is a self-hosted, open-source remote device management server.
+#
+# The 'mesh_central' group is populated automatically by generate_ansible_inventory
+# from VMs tagged with 'role_mesh_central' in pwy-home-lab-pkg.yaml.
+#
+# Usage:
+#   ./run --build      Generate inventory then install MeshCentral
+#   ./run --test       Check MeshCentral web UI is reachable; open browser on success
+#   ./run --deps       Install Python + Ansible requirements only
+#   ./run --status     Show current inventory file
+#   ./run --clean      Remove generated tmp files
+#   ./run --clean-all  Remove tmp files and Python virtual environment
+#
+# Prerequisites:
+#   - The mesh-central Proxmox VM must be running with qemu-guest-agent.
+#   - The dynamic inventory must contain the VM (run generate_ansible_inventory first,
+#     or use --build which calls it automatically).
+#   - SSH access to the VM via the default cloud_init_user (ubuntu).
+
+set -euo pipefail
+function handle_error {
+    local exit_status=$?
+    echo "An error occurred on line $LINENO: $BASH_COMMAND"
+    exit $exit_status
+}
+trap handle_error ERR
+
+. $(git rev-parse --show-toplevel)/set_env.sh
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+. $_UTILITIES_DIR/bash/init.sh
+
+export PYTHON_VERSION='python3.12'
+
+INVENTORY_FILE="${_DYNAMIC_DIR}/ansible/inventory/hosts.yml"
+
+setup_python() {
+    VENV_PARENT_DIR="$SCRIPT_DIR"
+    _activate_ansible_locally "$VENV_PARENT_DIR"
+}
+
+install_collections() {
+    ansible-galaxy collection install community.sops --upgrade
+}
+
+run_ansible() {
+    local PLAYBOOK="$1"
+    cd "$SCRIPT_DIR"
+    ANSIBLE_HOST_KEY_CHECKING=False \
+    ANSIBLE_PYTHON_INTERPRETER=auto \
+        ansible-playbook --inventory "${INVENTORY_FILE}" "$PLAYBOOK"
+}
+
+generate_inventory() {
+    echo "Generating Ansible inventory..."
+    "$_GENERATE_INVENTORY" --build
+}
+
+function show_usage() {
+    printf "Usage: $0 <command>\n"
+    cat <<EOF
+    -b|--build      Generate inventory then install MeshCentral
+    -t|--test       Run playbook against existing inventory (no regen)
+    -d|--deps       Install Python and Ansible requirements only
+    -c|--clean      Remove generated tmp files
+    -C|--clean-all  Remove tmp files and the Python virtual environment
+    -s|--status     Show the current inventory file
+    -h|--help       Show this help
+EOF
+    exit 1
+}
+
+if [[ $# -lt 1 ]]; then
+    show_usage "$@"
+fi
+
+function deps() {
+    setup_python
+    install_collections
+}
+
+function build() {
+    setup_python
+    install_collections
+    generate_inventory
+    run_ansible "playbook.install-mesh-central.yaml"
+}
+
+function test_app() {
+    if [ ! -f "${INVENTORY_FILE}" ]; then
+        echo "ERROR: Inventory not found at ${INVENTORY_FILE}"
+        echo "Run './run --build' first to deploy and generate inventory."
+        exit 1
+    fi
+
+    # Read admin credentials from SOPS secrets (same source used by Ansible).
+    local mc_creds
+    mc_creds=$(python3 - <<PYEOF
+import subprocess, yaml, json, sys, os
+secrets_file = os.path.join(
+    os.environ["_INFRA_DIR"],
+    "mesh-central-pkg/_config/mesh-central-pkg_secrets.sops.yaml"
+)
+result = subprocess.run(
+    ["sops", "--decrypt", secrets_file],
+    capture_output=True, text=True
+)
+if result.returncode != 0:
+    print("ERROR: " + result.stderr.strip(), file=sys.stderr)
+    sys.exit(1)
+cfg = yaml.safe_load(result.stdout)
+section = (cfg.get("mesh-central-pkg_secrets", {})
+              .get("config_params", {})
+              .get("mesh-central-pkg/_stack/null/examples/example-lab/mesh-central/configure-server", {}))
+print(json.dumps({
+    "username": section.get("admin_username", "admin"),
+    "password": section.get("admin_password", ""),
+}))
+PYEOF
+    )
+    if [[ "$mc_creds" == ERROR* ]] || [[ -z "$mc_creds" ]]; then
+        echo "ERROR: Could not read MeshCentral credentials from SOPS secrets."
+        exit 1
+    fi
+    local mc_user mc_pass
+    mc_user=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['username'])" "$mc_creds")
+    mc_pass=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['password'])" "$mc_creds")
+
+    local ips
+    ips=$(python3 - "${INVENTORY_FILE}" <<'PYEOF'
+import sys, yaml
+with open(sys.argv[1]) as f:
+    inv = yaml.safe_load(f)
+group = inv.get("all", {}).get("children", {}).get("mesh_central", {})
+hosts = group.get("hosts", {}) or {}
+for name, vars in hosts.items():
+    ip = (vars or {}).get("ansible_host", name)
+    print(ip)
+PYEOF
+    )
+
+    if [[ -z "$ips" ]]; then
+        echo "ERROR: No mesh_central hosts found in inventory."
+        exit 1
+    fi
+
+    local any_failed=0
+    while IFS= read -r ip; do
+        local url="https://${ip}:443"
+
+        # Step 1: Reachability check.
+        echo "Checking MeshCentral UI: ${url}"
+        if ! curl -k -s -f -o /dev/null --max-time 10 "$url"; then
+            echo "  FAIL — MeshCentral did not respond at ${url}"
+            echo "         Check that the VM is running and the service is up:"
+            echo "           ssh ubuntu@${ip} 'sudo systemctl status meshcentral'"
+            any_failed=1
+            continue
+        fi
+        echo "  OK — reachable"
+
+        # Step 2: Login check — POST credentials, verify dashboard (not login page) returned.
+        local tmp_jar tmp_body
+        tmp_jar=$(mktemp)
+        tmp_body=$(mktemp)
+        local http_code title
+        http_code=$(curl -k -s -c "$tmp_jar" \
+            -o "$tmp_body" -w "%{http_code}" \
+            --max-time 15 \
+            -X POST "${url}/" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "action=login" \
+            --data-urlencode "username=${mc_user}" \
+            --data-urlencode "password=${mc_pass}")
+        title=$(grep -o "<title>[^<]*</title>" "$tmp_body" 2>/dev/null || true)
+        rm -f "$tmp_jar" "$tmp_body"
+
+        if [[ "$title" == *"MeshCentral - Login"* ]]; then
+            echo "  FAIL — login as '${mc_user}' failed (got login page back)"
+            echo "         Credentials may be wrong in SOPS secrets or account not created."
+            echo "         To reset: ssh ubuntu@${ip} 'cd /opt/meshcentral && sudo systemctl stop meshcentral && sudo node node_modules/meshcentral --resetaccount ${mc_user} --pass <newpass> && sudo systemctl start meshcentral'"
+            any_failed=1
+        elif [[ "$http_code" == "200" ]] && [[ "$title" == *"MeshCentral"* ]]; then
+            echo "  OK — login as '${mc_user}' succeeded"
+            echo ""
+            echo "  Connect at: ${url}  (username: ${mc_user})"
+            :
+        else
+            echo "  FAIL — unexpected response (HTTP ${http_code}, title: ${title})"
+            any_failed=1
+        fi
+    done <<< "$ips"
+
+    if [[ "$any_failed" -eq 1 ]]; then
+        exit 1
+    fi
+}
+
+function clean() {
+    rm -rf "${SCRIPT_DIR}/tmp"
+}
+
+function clean_all() {
+    clean
+    rm -rf "${SCRIPT_DIR}/.venv"
+}
+
+function show_status() {
+    if [ -f "${INVENTORY_FILE}" ]; then
+        echo "Inventory file: ${INVENTORY_FILE}"
+        cat "${INVENTORY_FILE}"
+    else
+        echo "No inventory file found at ${INVENTORY_FILE}"
+        echo "Run './run --build' to generate it."
+    fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -b|--build)      shift; build ;;
+    -t|--test)       shift; test_app ;;
+    -d|--deps)       shift; deps ;;
+    -c|--clean)      shift; clean ;;
+    -C|--clean-all)  shift; clean_all ;;
+    -s|--status)     shift; show_status ;;
+    -h|--help)       show_usage ;;
+    *)               shift ;;
+  esac
+done

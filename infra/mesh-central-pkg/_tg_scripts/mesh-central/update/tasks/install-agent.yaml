@@ -1,0 +1,188 @@
+---
+# Install the MeshCentral agent on a Linux (AMD64) host, or reinstall it if
+# it is currently enrolled in the wrong device group.
+#
+# The agent is downloaded from the MeshCentral server onto the Ansible
+# controller, then copied to the target host via the existing SSH connection.
+# This works for VLAN-isolated hosts that cannot reach the MeshCentral server
+# directly.
+#
+# Idempotent:
+#   - If meshagent is active AND already enrolled in the correct device group,
+#     all tasks are skipped.
+#   - If meshagent is active but enrolled in the WRONG group, it is uninstalled
+#     and reinstalled with the correct group.
+#   - If meshagent is not installed or not active, it is installed fresh.
+#
+# Variables required (set by the calling play):
+#   _mesh_central_host  - IP/hostname of the MeshCentral server
+#   _mesh_id            - Mesh ID of the target device group
+#   _mc_admin_username  - MeshCentral admin username (used for download auth)
+#   _mc_admin_password  - MeshCentral admin password
+#   _device_group_name  - Name of the target device group (used for group check)
+
+# Gather minimal OS facts so we can detect unsupported platforms.
+# (The calling play uses gather_facts: false for speed, so we gather here.)
+- name: Gather OS distribution facts
+  ansible.builtin.setup:
+    gather_subset:
+      - distribution
+  register: _os_facts
+
+# If the setup task was unreachable (e.g. host uses a different SSH user like
+# Kairos VMs), ansible_distribution will be undefined. End the host cleanly
+# rather than failing on undefined variable references in subsequent tasks.
+# The calling play sets ignore_unreachable: true so this host is not fatal.
+- name: Skip host if OS facts could not be gathered (host was unreachable)
+  when: ansible_distribution is not defined
+  ansible.builtin.debug:
+    msg: >
+      SKIPPING meshagent install on {{ inventory_hostname }}:
+      OS facts unavailable (host unreachable or SSH auth failed).
+      Agent install will be retried on the next make run.
+
+- name: End host if OS facts unavailable
+  when: ansible_distribution is not defined
+  ansible.builtin.meta: end_host
+
+# Rocky Linux 10+ ships glibc 2.39+. The meshagent native binary (served by
+# MeshCentral) segfaults immediately on startup on glibc 2.39 due to a known
+# upstream incompatibility (ILibParsers.c crash). Rocky 9 (glibc 2.34) works.
+# Tracked in docs/README.idempotence-and-tech-debt.md until MeshCentral fixes
+# the binary or provides a Rocky 10-compatible build.
+- name: Warn and skip meshagent install on Rocky Linux 10+
+  when:
+    - ansible_distribution == 'Rocky'
+    - ansible_distribution_major_version | int >= 10
+  ansible.builtin.debug:
+    msg: >
+      SKIPPING meshagent install on {{ inventory_hostname }}
+      ({{ ansible_distribution }} {{ ansible_distribution_version }}):
+      the meshagent native binary crashes on glibc 2.39+ (Rocky 10).
+      Tracked as tech-debt — see docs/README.idempotence-and-tech-debt.md.
+
+- name: End tasks for unsupported OS
+  when:
+    - ansible_distribution == 'Rocky'
+    - ansible_distribution_major_version | int >= 10
+  ansible.builtin.meta: end_host
+
+- name: Check meshagent service status
+  ansible.builtin.shell:
+    cmd: systemctl is-active meshagent 2>/dev/null || echo inactive
+  become: true
+  changed_when: false
+  register: _agent_status
+
+- name: Read current mesh group from installed agent config
+  ansible.builtin.shell:
+    cmd: "grep '^MeshName=' /usr/local/mesh_services/meshagent/meshagent.msh 2>/dev/null | cut -d= -f2 || echo ''"
+  become: true
+  changed_when: false
+  register: _current_mesh_name
+
+- name: Set agent state facts
+  ansible.builtin.set_fact:
+    _agent_active:        "{{ _agent_status.stdout | trim == 'active' }}"
+    _agent_correct_group: "{{ _current_mesh_name.stdout | trim == _device_group_name }}"
+
+- name: Skip if agent is active and already in the correct group
+  when: _agent_active and _agent_correct_group
+  ansible.builtin.debug:
+    msg: >
+      meshagent is already active on {{ inventory_hostname }}
+      in group '{{ _device_group_name }}' — skipping install.
+
+- name: Uninstall agent if active in the wrong group
+  when: _agent_active and not _agent_correct_group
+  block:
+    - name: Report wrong group (will reinstall)
+      ansible.builtin.debug:
+        msg: >
+          meshagent on {{ inventory_hostname }} is in group
+          '{{ _current_mesh_name.stdout | trim }}' but should be
+          '{{ _device_group_name }}' — reinstalling.
+
+    - name: Uninstall existing agent
+      ansible.builtin.command:
+        cmd: /usr/local/mesh_services/meshagent/meshagent -uninstall
+      become: true
+      changed_when: true
+
+- name: Install MeshCentral agent
+  when: not (_agent_active and _agent_correct_group)
+  block:
+    - name: Fail if mesh ID is missing
+      ansible.builtin.fail:
+        msg: >
+          No mesh ID available for {{ inventory_hostname }}.
+          Ensure the mesh_central play ran successfully and set _mesh_id_map.
+      when: _mesh_id == ''
+
+    - name: Create temp directory on Ansible controller for agent download
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: _meshagent
+      delegate_to: localhost
+      register: _local_tmp_dir
+
+    - name: Download MeshCentral agent installer to Ansible controller
+      ansible.builtin.get_url:
+        url: "https://{{ _mesh_central_host }}/meshagents?id={{ _mesh_id }}&meshinstall=6&arch=x86_64"
+        dest: "{{ _local_tmp_dir.path }}/meshagent"
+        mode: "0755"
+        validate_certs: false
+        timeout: 60
+        url_username: "{{ _mc_admin_username }}"
+        url_password: "{{ _mc_admin_password }}"
+      delegate_to: localhost
+      no_log: true
+
+    - name: Create temp directory on target host
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: _meshagent
+      become: true
+      register: _remote_tmp_dir
+
+    - name: Copy agent installer to target host via existing SSH connection
+      ansible.builtin.copy:
+        src: "{{ _local_tmp_dir.path }}/meshagent"
+        dest: "{{ _remote_tmp_dir.path }}/meshagent"
+        mode: "0755"
+      become: true
+
+    - name: Install agent (creates and starts meshagent systemd service)
+      ansible.builtin.command:
+        cmd: "{{ _remote_tmp_dir.path }}/meshagent -install"
+      become: true
+      changed_when: true
+
+    - name: Wait for meshagent service to become active
+      ansible.builtin.shell:
+        cmd: systemctl is-active meshagent 2>/dev/null || echo inactive
+      become: true
+      changed_when: false
+      register: _agent_status_after
+      retries: 12
+      delay: 5
+      until: _agent_status_after.stdout | trim == "active"
+
+    - name: Clean up local temp directory
+      ansible.builtin.file:
+        path: "{{ _local_tmp_dir.path }}"
+        state: absent
+      delegate_to: localhost
+
+    - name: Clean up remote temp directory
+      ansible.builtin.file:
+        path: "{{ _remote_tmp_dir.path }}"
+        state: absent
+      become: true
+
+    - name: Report successful enrollment
+      ansible.builtin.debug:
+        msg: >
+          MeshCentral agent installed and active on {{ inventory_hostname }}
+          ({{ ansible_host }}). Device will appear in the '{{ _device_group_name }}'
+          group in MeshCentral.

@@ -1,0 +1,8 @@
+#!/bin/bash
+# Wave test: MeshCentral UI reachability and admin login check.
+set -euo pipefail
+GIT_ROOT="$(git rev-parse --show-toplevel)"
+. "$GIT_ROOT/set_env.sh"
+echo ""
+echo "=== Wave Test: MeshCentral ==="
+"$_GIT_ROOT/infra/mesh-central-pkg/_tg_scripts/mesh-central/install/run" --test

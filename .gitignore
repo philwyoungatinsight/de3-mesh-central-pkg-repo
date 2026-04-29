@@ -1,0 +1,33 @@
+
+# Terraform / OpenTofu / Terragrunt
+**/tfplan
+**/.tfplan
+**/.terragrunt-cache/
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/backend.tf
+**/provider.tf
+
+# Remote package repo clones (recreate with: infra/default-pkg/_scripts/human-only/setup/pkg-mgr/run sync)
+_ext_packages/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo

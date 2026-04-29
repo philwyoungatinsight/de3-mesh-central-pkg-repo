@@ -1,0 +1,351 @@
+---
+# Install MeshCentral on an Ubuntu host.
+#
+# MeshCentral is a Node.js-based self-hosted remote device management server.
+# It runs as a systemd service under a dedicated 'meshcentral' system user.
+# After installation, the web UI is available at https://<host>:443 (or :4443).
+#
+# Input variables (host vars from inventory):
+#   ansible_host  (str) - IP/hostname of the target server.
+#
+# Side effects:
+#   - Node.js 20 LTS is installed via NodeSource apt repository.
+#   - 'meshcentral' system user and /opt/meshcentral directory are created.
+#   - MeshCentral npm package is installed in /opt/meshcentral.
+#   - systemd service 'meshcentral' is created, enabled, and started.
+#   - Idempotent: re-running this task is safe; installed check is done via
+#     the presence of /opt/meshcentral/node_modules/meshcentral.
+
+- name: Assert host is Ubuntu
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == "Ubuntu"
+    fail_msg: >
+      MeshCentral requires Ubuntu. This host runs
+      {{ ansible_distribution }} {{ ansible_distribution_version }}.
+
+- name: Install Node.js apt key
+  ansible.builtin.get_url:
+    url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+    dest: /etc/apt/keyrings/nodesource.asc
+    mode: "0644"
+  become: true
+
+- name: Add NodeSource Node.js 20 LTS repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_20.x nodistro main"
+    state: present
+    filename: nodesource
+  become: true
+
+- name: Install Node.js
+  ansible.builtin.apt:
+    name: nodejs
+    state: present
+    update_cache: true
+  become: true
+
+- name: Create meshcentral system user
+  ansible.builtin.user:
+    name: meshcentral
+    system: true
+    shell: /usr/sbin/nologin
+    home: /opt/meshcentral
+    create_home: true
+  become: true
+
+- name: Install MeshCentral via npm
+  ansible.builtin.command:
+    cmd: npm install meshcentral
+    chdir: /opt/meshcentral
+    creates: /opt/meshcentral/node_modules/meshcentral
+  become: true
+
+- name: Set ownership of meshcentral directory
+  ansible.builtin.file:
+    path: /opt/meshcentral
+    owner: meshcentral
+    group: meshcentral
+    recurse: true
+  become: true
+
+- name: Write MeshCentral source compatibility patch script
+  ansible.builtin.copy:
+    dest: /opt/meshcentral/apply-patches.py
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/usr/bin/env python3
+      """Patch MeshCentral source files for Intel AMT ACM mode compatibility.
+
+      amtmanager.js fix: IPS_HostBasedSetupService returns HTTP 400 AccessDenied
+        on ACM-provisioned AMT (AMT 16.x). The original code uses the BatchEnum
+        final status (400) to determine success, but the meaningful check is whether
+        AMT_GeneralSettings (the actual auth/realm verification) succeeded.
+
+      meshagent.js fix: When a MeshAgent connects via a jump host, its remoteaddr
+        is the jump host IP, not the AMT NIC IP. Without this fix, node.host gets
+        overwritten on each agent reconnect, causing the AMT scanner to lose the
+        correct AMT NIC IP and fail to connect.
+      """
+      import os
+      import sys
+
+      AMTMANAGER = '/opt/meshcentral/node_modules/meshcentral/amtmanager.js'
+      MESHAGENT = '/opt/meshcentral/node_modules/meshcentral/meshagent.js'
+
+      changed = []
+
+      # --- amtmanager.js patch 1: fix BatchEnum status check ---
+      OLD_COND = ("(status == 200) && (responses['AMT_GeneralSettings'] != null) && "
+                  "(responses['IPS_HostBasedSetupService'] != null) && "
+                  "(responses['IPS_HostBasedSetupService'].response != null) && "
+                  "(responses['IPS_HostBasedSetupService'].response != null) && "
+                  "(stack.wsman.comm.digestRealm == responses['AMT_GeneralSettings'].response.DigestRealm)")
+      NEW_COND = ("(responses['AMT_GeneralSettings'] != null && "
+                  "responses['AMT_GeneralSettings'].status == 200 && "
+                  "responses['AMT_GeneralSettings'].response != null) && "
+                  "(responses['IPS_HostBasedSetupService'] != null) && "
+                  "(stack.wsman.comm.digestRealm == responses['AMT_GeneralSettings'].response.DigestRealm)")
+
+      # --- amtmanager.js patch 2: default controlMode to ACM when IPS inaccessible ---
+      OLD_CTRL = ("dev.aquired.controlMode = responses['IPS_HostBasedSetupService']"
+                  ".response.CurrentControlMode; // 1 = CCM, 2 = ACM")
+      NEW_CTRL = ("var _ipsResponse = responses['IPS_HostBasedSetupService'];\n"
+                  "            dev.aquired.controlMode = (_ipsResponse && "
+                  "_ipsResponse.response && _ipsResponse.response.CurrentControlMode != null) "
+                  "? _ipsResponse.response.CurrentControlMode : 2; "
+                  "// 1 = CCM, 2 = ACM (default ACM when IPS_HostBasedSetupService inaccessible)")
+
+      with open(AMTMANAGER, 'r') as f:
+          content = f.read()
+      new_content = content.replace(OLD_COND, NEW_COND).replace(OLD_CTRL, NEW_CTRL)
+      if new_content != content:
+          with open(AMTMANAGER, 'w') as f:
+              f.write(new_content)
+          changed.append('amtmanager.js')
+          print('CHANGED: amtmanager.js (AMT ACM IPS_HostBasedSetupService fix)')
+      else:
+          print('ALREADY_PATCHED: amtmanager.js')
+
+      # --- meshagent.js patch: preserve node.host when AMT credentials configured ---
+      OLD_HOST = ("if (device.host != obj.remoteaddr) "
+                  "{ device.host = obj.remoteaddr; change = 1; changes.push('host'); }")
+      NEW_HOST = ("// Don't overwrite host with agent connect IP when AMT credentials are set:\n"
+                  "                    // The AMT NIC may be on a different subnet from the agent's connection path.\n"
+                  "                    if (device.host != obj.remoteaddr && "
+                  "!(device.intelamt && device.intelamt.user)) "
+                  "{ device.host = obj.remoteaddr; change = 1; changes.push('host'); }")
+
+      with open(MESHAGENT, 'r') as f:
+          content = f.read()
+      new_content = content.replace(OLD_HOST, NEW_HOST)
+      if new_content != content:
+          with open(MESHAGENT, 'w') as f:
+              f.write(new_content)
+          changed.append('meshagent.js')
+          print('CHANGED: meshagent.js (preserve node.host for AMT NIC IP)')
+      else:
+          print('ALREADY_PATCHED: meshagent.js')
+
+      # --- commander.htm patch: use TLS port when intelamt.tls==1 ---
+      # The Connect button hardcodes port 16992 (non-TLS). On devices where only
+      # port 16993 (TLS) is open, the connection fails. Patch all commander*.htm
+      # files to check intelamt.tls and select the right port/tls flag.
+      import re as _re
+      COMMANDER_PATTERN = (rb'(connectButtonfunctionEx\(\)\{currentMeshNode=parent\.getCurrentNode\(\);)'
+                           rb'connect\(currentMeshNode\._id,16992,null,null,0\)'
+                           rb'(;Q\("xconnectbutton1"\)\.value=[^}]+\})')
+      COMMANDER_REPLACEMENT = (rb'\1var _amttls=(currentMeshNode.intelamt&&currentMeshNode.intelamt.tls==1)?1:0;'
+                                rb'var _amtport=_amttls?16993:16992;'
+                                rb'connect(currentMeshNode._id,_amtport,null,null,_amttls)\2')
+
+      for _root, _dirs, _fnames in os.walk('/opt/meshcentral/node_modules/meshcentral/public'):
+          for _fname in _fnames:
+              if not (_fname.startswith('commander') and _fname.endswith('.htm')):
+                  continue
+              _path = os.path.join(_root, _fname)
+              with open(_path, 'rb') as f:
+                  _content = f.read()
+              _new, _n = _re.subn(COMMANDER_PATTERN, COMMANDER_REPLACEMENT, _content)
+              if _n > 0:
+                  with open(_path, 'wb') as f:
+                      f.write(_new)
+                  changed.append(_fname)
+                  print('CHANGED: ' + _fname + ' (AMT commander TLS port fix)')
+              elif b'_amttls' in _content:
+                  print('ALREADY_PATCHED: ' + _fname)
+
+      sys.exit(0)
+  become: true
+
+- name: Apply MeshCentral source patches for Intel AMT ACM compatibility
+  ansible.builtin.command:
+    cmd: python3 /opt/meshcentral/apply-patches.py
+  become: true
+  register: _patches_result
+  changed_when: "'CHANGED' in _patches_result.stdout"
+
+- name: Create meshcentral-data directory
+  ansible.builtin.file:
+    path: /opt/meshcentral/meshcentral-data
+    state: directory
+    owner: meshcentral
+    group: meshcentral
+    mode: "0750"
+  become: true
+
+- name: Write config.json with server certificate (external IP)
+  ansible.builtin.copy:
+    dest: /opt/meshcentral/meshcentral-data/config.json
+    owner: meshcentral
+    group: meshcentral
+    mode: "0640"
+    force: false  # do not overwrite if already customised
+    content: |
+      {
+        "settings": {
+          "cert": "{{ ansible_host }}"
+        },
+        "domains": {
+          "": {}
+        }
+      }
+  become: true
+
+- name: Grant node permission to bind to privileged ports (port 443)
+  community.general.capabilities:
+    path: /usr/bin/node
+    capability: cap_net_bind_service=ep
+    state: present
+  become: true
+  register: _setcap_result
+
+- name: Create OpenSSL legacy renegotiation config for Intel AMT TLS
+  ansible.builtin.copy:
+    dest: /opt/meshcentral/openssl-legacy.cnf
+    owner: meshcentral
+    group: meshcentral
+    mode: "0644"
+    content: |
+      # Enable legacy TLS renegotiation for Intel AMT (port 16993).
+      # Intel AMT firmware requires the deprecated TLS renegotiation extension
+      # which OpenSSL 3.0+ disables by default. Node.js uses the system OpenSSL,
+      # so this env var is sufficient to enable it for MeshCentral's AMT manager.
+      openssl_conf = openssl_init
+
+      [openssl_init]
+      ssl_conf = ssl_sect
+
+      [ssl_sect]
+      system_default = system_default_sect
+
+      [system_default_sect]
+      Options = UnsafeLegacyRenegotiation
+  become: true
+  register: _openssl_cnf_result
+
+- name: Create meshcentral systemd service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/meshcentral.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=MeshCentral Remote Management Server
+      After=network.target
+
+      [Service]
+      Type=simple
+      User=meshcentral
+      WorkingDirectory=/opt/meshcentral
+      Environment=OPENSSL_CONF=/opt/meshcentral/openssl-legacy.cnf
+      ExecStart=/usr/bin/node node_modules/meshcentral
+      Restart=on-failure
+      RestartSec=10
+
+      [Install]
+      WantedBy=multi-user.target
+  become: true
+  register: _service_file_result
+
+- name: Reload systemd and restart meshcentral if service file, OpenSSL config, patches, or setcap changed
+  ansible.builtin.systemd:
+    name: meshcentral
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  become: true
+  when: _service_file_result.changed or _openssl_cnf_result.changed or _patches_result.changed or _setcap_result.changed
+
+- name: Enable and start meshcentral service
+  ansible.builtin.systemd:
+    name: meshcentral
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+- name: Set MeshCentral admin credentials from config
+  ansible.builtin.set_fact:
+    _mc_admin_username: "{{ hostvars['localhost']['mesh_central_config'].admin_username | default('admin') }}"
+    _mc_admin_email: "{{ hostvars['localhost']['mesh_central_config'].admin_email | default('admin@homelab.local') }}"
+    _mc_admin_password: "{{ hostvars['localhost']['mesh_central_config'].admin_password }}"
+  no_log: true
+
+- name: Check if MeshCentral admin account exists
+  ansible.builtin.shell:
+    cmd: >
+      grep -q '"_id":"user//{{ _mc_admin_username }}"'
+      /opt/meshcentral/meshcentral-data/meshcentral.db 2>/dev/null
+      && echo exists || echo missing
+  become: true
+  changed_when: false
+  register: _mc_user_check
+
+- name: Create MeshCentral admin account (first account becomes site admin)
+  when: _mc_user_check.stdout == "missing"
+  block:
+    - name: Stop meshcentral service for account creation
+      ansible.builtin.systemd:
+        name: meshcentral
+        state: stopped
+      become: true
+
+    - name: Create admin account via CLI
+      ansible.builtin.command:
+        cmd: >
+          node node_modules/meshcentral
+          --createaccount {{ _mc_admin_username }}
+          --pass {{ _mc_admin_password }}
+          --email {{ _mc_admin_email }}
+        chdir: /opt/meshcentral
+      become: true
+      no_log: true
+
+    - name: Promote admin account to site administrator
+      ansible.builtin.command:
+        cmd: node node_modules/meshcentral --adminaccount {{ _mc_admin_username }}
+        chdir: /opt/meshcentral
+      become: true
+
+    - name: Restore meshcentral ownership after CLI account creation
+      ansible.builtin.file:
+        path: /opt/meshcentral
+        owner: meshcentral
+        group: meshcentral
+        recurse: true
+      become: true
+
+    - name: Start meshcentral service after account creation
+      ansible.builtin.systemd:
+        name: meshcentral
+        state: started
+      become: true
+
+- name: Report MeshCentral status
+  ansible.builtin.debug:
+    msg: >
+      MeshCentral installed on {{ inventory_hostname }} ({{ ansible_host }}).
+      Web UI will be available at https://{{ ansible_host }}:443 after first run
+      generates certificates (may take ~60s on first start).

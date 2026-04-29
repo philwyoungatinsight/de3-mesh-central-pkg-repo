@@ -1,0 +1,6 @@
+framework_backend:
+  type: gcs
+  config:
+    bucket: seed-tf-state-pwy-homelab-20260308-1700
+    project: pwy-homelab-20260208-2054
+    location: US-CENTRAL1

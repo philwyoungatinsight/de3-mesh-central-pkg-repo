@@ -1,0 +1,8 @@
+stores:
+  yaml:
+    indent: 2
+creation_rules:
+- path_regex: .*infra/unifi-pkg/_config/.*\.sops\.yaml$
+  pgp: 446B4127CF4E00C389579F20986E9FAE2FB2BEBD, 1FAFFDF2C76C758F736178E2B776DF4CEB6B692B
+- path_regex: .*infra/[^/]+/_config/.*\.sops\.yaml$
+  pgp: 446B4127CF4E00C389579F20986E9FAE2FB2BEBD, 1FAFFDF2C76C758F736178E2B776DF4CEB6B692B

@@ -1,0 +1,48 @@
+---
+# Get or create a MeshCentral device group by name.
+#
+# Uses the get-or-create-mesh-group.py Python script to HTTP-login to
+# MeshCentral, then communicates with its WebSocket API using the session
+# cookie to find or create the named device group.
+#
+# The script runs on the Ansible controller (localhost), so no SSH is needed
+# into the MeshCentral server for this step.
+#
+# Sets the fact _mgmt_last_mesh_id on the calling host with the mesh ID.
+#
+# Variables required (set by the calling play):
+#   _mc_admin_username  - MeshCentral admin username
+#   _mc_admin_password  - MeshCentral admin password
+#   _device_group_name  - Name of the device group to get or create
+
+- name: Get or create '{{ _device_group_name }}' device group via HTTP+WebSocket API
+  ansible.builtin.command:
+    cmd: >
+      python3
+      {{ playbook_dir }}/scripts/get-or-create-mesh-group.py
+      https://{{ ansible_host }}
+      {{ _mc_admin_username }}
+      {{ _mc_admin_password }}
+      {{ _device_group_name }}
+  delegate_to: localhost
+  register: _mesh_group_result
+  changed_when: false
+  no_log: true
+
+- name: Fail if mesh ID could not be determined
+  ansible.builtin.fail:
+    msg: >
+      Could not find or create device group '{{ _device_group_name }}'
+      in MeshCentral at {{ ansible_host }}.
+      Script output: {{ _mesh_group_result.stdout | trim }}
+  when: _mesh_group_result.stdout | trim == ''
+
+- name: Expose mesh ID as host fact for downstream plays
+  ansible.builtin.set_fact:
+    _mgmt_last_mesh_id: "{{ _mesh_group_result.stdout | trim }}"
+
+- name: Report device group
+  ansible.builtin.debug:
+    msg: >
+      Device group '{{ _device_group_name }}' mesh ID:
+      {{ _mgmt_last_mesh_id }} (MeshCentral at {{ ansible_host }})

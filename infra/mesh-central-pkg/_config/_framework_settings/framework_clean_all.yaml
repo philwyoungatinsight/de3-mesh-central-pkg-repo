@@ -1,0 +1,14 @@
+# Controls behaviour of `make clean-all` (_clean_all/run).
+# clean-all is nuclear: destroys ALL resources, ignores all _skip_* flags,
+# and wipes the GCS state bucket.
+framework_clean_all:
+  # Delete all objects from the GCS state bucket after destroy.
+  # Leaves the bucket itself intact (it is never removed).
+  wipe_state_bucket_contents: true
+
+  # Packages whose infra/<pkg>/_clean_all/run script is called before
+  # Terraform destroy, in this order. Used for resources the Terraform
+  # provider cannot delete on its own (e.g. Proxmox VMs via REST API).
+  # Ordering: compute/VMs before networking — reverse of build order.
+  pre_destroy_order:
+    - pwy-home-lab-pkg

@@ -1,0 +1,23 @@
+framework_packages:
+- name: _framework-pkg
+  package_type: external
+  exportable: true
+  repo: de3-runner
+  source: https://github.com/philwyoungatinsight/de3-runner.git
+  git_ref: main
+- name: mesh-central-pkg
+  package_type: embedded
+  exportable: true
+  is_main_package: true
+- name: proxmox-pkg
+  package_type: external
+  exportable: true
+  repo: de3-runner
+  source: https://github.com/philwyoungatinsight/de3-runner.git
+  git_ref: main
+- name: unifi-pkg
+  package_type: external
+  exportable: true
+  repo: de3-runner
+  source: https://github.com/philwyoungatinsight/de3-runner.git
+  git_ref: main

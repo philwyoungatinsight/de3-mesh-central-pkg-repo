@@ -1,0 +1,143 @@
+#!/bin/bash
+# update-mesh-central/run
+#
+# Enrolls all hosts tagged role_mgmt_group_FOO into MeshCentral as managed
+# devices, and configures Intel AMT credentials for AMT-capable machines.
+#
+# How it works:
+#   1. Regenerates the Ansible inventory from Terraform state + YAML config.
+#   2. On the mesh-central host: creates (or reuses) one MeshCentral device
+#      group per mgmt_group_* Ansible group found in the inventory.
+#   3. Removes stale node entries for hosts that changed group or were removed.
+#   4. On each mgmt_group_* host (via SSH, jump host for VLAN-isolated machines):
+#      installs the MeshCentral agent. Re-running is safe — existing agents in
+#      the correct group are skipped; agents in the wrong group are reinstalled.
+#   5. Configures Intel AMT credentials in MeshCentral for machines with
+#      power_type=amt so out-of-band management is available in the GUI.
+#
+# Usage:
+#   ./run --build      Regenerate inventory, enroll all mgmt_group_* hosts
+#   ./run --test       Verify agent is running on all mgmt_group_* hosts
+#   ./run --deps       Install Python + Ansible requirements only
+#   ./run --status     Show current inventory file
+#   ./run --clean      Remove generated tmp files
+#   ./run --clean-all  Remove tmp files and Python virtual environment
+#
+# Prerequisites:
+#   - MeshCentral is installed and running (run install-mesh-central first).
+#   - MaaS server (jump host) is up and reachable at the configured IP.
+#   - Managed hosts are deployed and SSH-accessible.
+#   - SSH access from the Ansible controller to each host (via jump for VLAN hosts).
+
+set -euo pipefail
+function handle_error {
+    local exit_status=$?
+    echo "An error occurred on line $LINENO: $BASH_COMMAND"
+    exit $exit_status
+}
+trap handle_error ERR
+
+GIT_ROOT="$(git rev-parse --show-toplevel)"
+. "$GIT_ROOT/set_env.sh"
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+. $_UTILITIES_DIR/bash/init.sh
+
+export PYTHON_VERSION='python3.12'
+
+INVENTORY_FILE="${_DYNAMIC_DIR}/ansible/inventory/hosts.yml"
+
+setup_python() {
+    VENV_PARENT_DIR="$SCRIPT_DIR"
+    _activate_ansible_locally "$VENV_PARENT_DIR"
+}
+
+install_collections() {
+    ansible-galaxy collection install community.sops --upgrade
+}
+
+run_ansible() {
+    local PLAYBOOK="$1"
+    cd "$SCRIPT_DIR"
+    ANSIBLE_HOST_KEY_CHECKING=False \
+    ANSIBLE_PYTHON_INTERPRETER=auto \
+        ansible-playbook --inventory "${INVENTORY_FILE}" "$PLAYBOOK"
+}
+
+generate_inventory() {
+    echo "Generating Ansible inventory..."
+    "$_GENERATE_INVENTORY" --build
+}
+
+function show_usage() {
+    printf "Usage: $0 <command>\n"
+    cat <<EOF
+    -b|--build      Regenerate inventory then enroll all mgmt_group_* hosts
+    -t|--test       Verify agent is running on mgmt_group_* hosts (no regen)
+    -d|--deps       Install Python and Ansible requirements only
+    -c|--clean      Remove generated tmp files
+    -C|--clean-all  Remove tmp files and the Python virtual environment
+    -s|--status     Show the current inventory file
+    -h|--help       Show this help
+EOF
+    exit 1
+}
+
+if [[ $# -lt 1 ]]; then
+    show_usage "$@"
+fi
+
+function deps() {
+    setup_python
+    install_collections
+}
+
+function build() {
+    setup_python
+    install_collections
+    generate_inventory
+    run_ansible "playbook.update-mesh-central.yaml"
+}
+
+function test_app() {
+    if [ ! -f "${INVENTORY_FILE}" ]; then
+        echo "ERROR: Inventory not found at ${INVENTORY_FILE}"
+        echo "Run './run --build' first."
+        exit 1
+    fi
+    setup_python
+    run_ansible "playbook.check-mesh-agent.yaml"
+}
+
+function clean() {
+    rm -rf "${SCRIPT_DIR}/tmp"
+}
+
+function clean_all() {
+    clean
+    rm -rf "${SCRIPT_DIR}/.venv"
+}
+
+function show_status() {
+    if [ -f "${INVENTORY_FILE}" ]; then
+        echo "Inventory file: ${INVENTORY_FILE}"
+        cat "${INVENTORY_FILE}"
+    else
+        echo "No inventory file found at ${INVENTORY_FILE}"
+        echo "Run './run --build' to generate it."
+    fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -b|--build)      shift; build ;;
+    -t|--test)       shift; test_app ;;
+    -d|--deps)       shift; deps ;;
+    -c|--clean)      shift; clean ;;
+    -C|--clean-all)  shift; clean_all ;;
+    -s|--status)     shift; show_status ;;
+    -h|--help)       show_usage ;;
+    *)               shift ;;
+  esac
+done

@@ -1,0 +1,23 @@
+mesh-central-pkg:
+  _provides_capability:
+  - mesh-central-pkg: 1.0.0
+  _requires_capability:
+  - proxmox-pkg: '>=1.0.0'
+  waves:
+  - name: vms.proxmox.utility.mesh-central
+    description: 'Create the MeshCentral VM on pve-1, install MeshCentral server with Intel AMT ACM patches applied, and enroll all managed hosts as MeshCentral devices for out-of-band KVM console and power management. Test verifies the MeshCentral web API is reachable.
+
+      '
+    test_ansible_playbook: mesh-central/vms-mesh-central-test
+    update_inventory: true
+  config_params:
+    mesh-central-pkg/_stack/proxmox/example-lab/pve-nodes/pve-1/vms/utils/mesh-central:
+      _unit_purpose: MeshCentral server VM on pve-1 (2 cores, 4 GB RAM, 99 GB disk). Hosts MeshCentral with Intel AMT ACM patches for out-of-band KVM console and power management of physical hosts.
+      _provider: proxmox
+      _browser_url: https://{ansible_host}
+      _wave: vms.proxmox.utility.mesh-central
+      additional_tags:
+      - role_mesh_central
+      cpu_cores: 2
+      disk_size: 99
+      memory_mb: 4096

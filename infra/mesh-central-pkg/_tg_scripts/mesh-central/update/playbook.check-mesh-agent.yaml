@@ -1,0 +1,31 @@
+---
+# Verify that the MeshCentral agent is installed and running on all
+# hosts tagged role_mgmt_group_FOO (matched by the mgmt_group_* pattern).
+
+- name: Check MeshCentral agent on mgmt_group_* hosts
+  hosts: "mgmt_group_*"
+  gather_facts: false
+  # ignore_unreachable: hosts with skip_ssh_check: true (e.g. Kairos VMs) may
+  # not be accessible via SSH. Unreachable hosts are noted in the recap but do
+  # not fail the play — the agent-active assertion still runs on reachable hosts.
+  ignore_unreachable: true
+
+  tasks:
+    - name: Check meshagent service status
+      ansible.builtin.shell:
+        cmd: systemctl is-active meshagent 2>/dev/null || echo inactive
+      become: true
+      changed_when: false
+      register: _agent_status
+
+    - name: Report agent status
+      ansible.builtin.debug:
+        msg: >
+          {{ inventory_hostname }} ({{ ansible_host }}):
+          meshagent is {{ _agent_status.stdout | trim }}
+      when: _agent_status.stdout is defined
+
+    - name: Fail if agent is not active
+      ansible.builtin.fail:
+        msg: "meshagent is not active on {{ inventory_hostname }} — run './run --build' to enroll."
+      when: _agent_status.stdout is defined and _agent_status.stdout | trim != "active"

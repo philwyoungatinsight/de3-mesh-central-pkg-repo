@@ -1,0 +1,34 @@
+waves_ordering:
+- _skip_on_wave_run: true
+  name: cloud.storage
+- _skip_on_wave_run: true
+  name: cloud.k8s
+- _skip_on_wave_run: true
+  name: network.unifi
+- _skip_on_wave_run: true
+  name: network.unifi.validate-config
+- _skip_on_wave_run: true
+  name: network.mikrotik
+- _skip_on_wave_run: true
+  name: external.proxmox.isos-and-snippets
+- _skip_on_wave_run: true
+  name: maas.servers.all
+- maas.test.proxmox-vms
+- maas.lifecycle.new
+- maas.lifecycle.commissioning
+- maas.lifecycle.ready
+- maas.lifecycle.allocated
+- maas.lifecycle.deploying
+- maas.lifecycle.deployed
+- maas.machine.config.networking
+- name: maas.machine.config.power
+- hypervisor.proxmox.install
+- hypervisor.proxmox.configure
+- hypervisor.proxmox.storage
+- vms.proxmox.utility.mesh-central
+- vms.proxmox.from-web.ubuntu
+- vms.proxmox.from-web.rocky
+- vms.proxmox.custom-images.image-maker
+- vms.proxmox.from-packer
+- vms.proxmox.from-kairos
+- local.updates

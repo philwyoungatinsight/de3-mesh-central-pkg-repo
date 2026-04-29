@@ -1,0 +1,19 @@
+#!/bin/bash
+# mesh-central-pkg setup — verifies prerequisites for MeshCentral automation.
+# MeshCentral scripts run Ansible playbooks via per-script Python venvs
+# bootstrapped by _activate_ansible_locally. No extra system tools are needed
+# beyond the core tools installed by default/setup (python3, opentofu, terragrunt).
+
+set -euo pipefail
+
+GIT_ROOT="$(git rev-parse --show-toplevel)"
+. "$GIT_ROOT/set_env.sh"
+
+echo "=== mesh-central-pkg setup ==="
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "  python3 not found — running _framework-pkg setup to install prerequisites..."
+    "$GIT_ROOT/infra/_framework-pkg/_setup/run"
+fi
+echo "  python3: $(python3 --version 2>&1)"
+echo "  Ansible venvs are bootstrapped per-script at first run."
+echo "=== mesh-central-pkg setup complete ==="

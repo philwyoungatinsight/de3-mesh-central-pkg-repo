@@ -1,0 +1,4 @@
+# Before each wave apply, delete any stale .tflock files from the GCS state
+# bucket for that wave's units. Prevents a failed previous run from leaving
+# locks that block the next apply. Set false only to debug lock-related issues.
+framework_pre_apply_unlock: true

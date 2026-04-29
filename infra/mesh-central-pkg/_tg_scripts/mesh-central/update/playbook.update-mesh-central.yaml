@@ -1,0 +1,217 @@
+---
+# Enroll all hosts tagged role_mgmt_group_FOO into MeshCentral.
+#
+# For each mgmt_group_* Ansible group discovered in the inventory a matching
+# MeshCentral device group is created (or reused), and the MeshCentral agent
+# is installed on every host in that group.
+#
+# Play 1: Load framework config (public YAML + SOPS secrets) on localhost.
+#         Captures MeshCentral credentials as a fact shared across plays.
+#
+# Play 2: On the mesh-central host, iterate over every mgmt_group_* group
+#         found in the inventory, call get-or-create-mesh-group.py for each,
+#         and store a {group_name → mesh_id} map as a host fact.
+#
+# Play 3: On every host matched by "mgmt_group_*", determine which group it
+#         belongs to, look up the corresponding mesh ID from Play 2, and
+#         install the agent if not already present.
+
+- name: Load framework config
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Load config_base role
+      ansible.builtin.include_role:
+        name: "{{ lookup('env', '_ANSIBLE_ROLES_DIR') }}/config_base"
+    - name: Discover MeshCentral configure-server path (active, non-skipped)
+      ansible.builtin.set_fact:
+        _mc_cs_path: >-
+          {%- set candidates = [] -%}
+          {%- for path in (_tg_providers['null']['config_params'] | default({})).keys()
+              | select('match', '.*/mesh-central/configure-server$') | list -%}
+            {%- set merged = path | ancestor_merge(_all_config_params) -%}
+            {%- if not (merged.skip | default(false)) -%}
+              {%- set _ = candidates.append(path) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ candidates | first | default('') }}
+
+    - name: Capture MeshCentral config as a fact for remote plays
+      ansible.builtin.set_fact:
+        mesh_central_config: >-
+          {{
+            (_mc_cs_path | ancestor_merge(_all_config_params)) |
+            combine(
+              _mc_cs_path | ancestor_merge(_all_secret_params)
+            )
+          }}
+
+    - name: Build list of machines with Intel AMT (power_type=amt) for credential config
+      ansible.builtin.set_fact:
+        _amt_nodes: >-
+          {%- set result = [] -%}
+          {%- set pub_params = _tg_providers.maas.config_params | default({}) -%}
+          {%- set sec_params = (_tg_providers_secrets.maas.config_params | default({}))
+                               if _tg_providers_secrets.maas is defined else {} -%}
+          {%- for path, cfg in pub_params.items() -%}
+            {%- if cfg.power_type | default('') == 'amt' -%}
+              {%- set hostname = path.split('/')[-1] -%}
+              {%- set sec = sec_params.get(path, {}) -%}
+              {%- set _ = result.append({
+                'hostname': hostname,
+                'power_address': cfg.get('power_address', ''),
+                'amt_user': sec.get('power_user', ''),
+                'amt_pass': sec.get('power_pass', ''),
+              }) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ result }}
+
+
+- name: Create or reuse MeshCentral device groups for all mgmt_group_* inventory groups
+  hosts: mesh_central
+  gather_facts: false
+
+  tasks:
+    - name: Collect mgmt_group_* group names from inventory
+      ansible.builtin.set_fact:
+        _mgmt_groups: "{{ groups | select('match', '^mgmt_group_') | list | sort }}"
+
+    - name: Report discovered mgmt groups
+      ansible.builtin.debug:
+        msg: "Found mgmt groups: {{ _mgmt_groups }}"
+
+    - name: Get or create device group for each mgmt_group
+      ansible.builtin.command:
+        cmd: >
+          python3
+          {{ playbook_dir }}/scripts/get-or-create-mesh-group.py
+          https://{{ ansible_host }}
+          {{ hostvars['localhost']['mesh_central_config'].admin_username | default('admin') }}
+          {{ hostvars['localhost']['mesh_central_config'].admin_password }}
+          {{ item }}
+      delegate_to: localhost
+      changed_when: false
+      no_log: true
+      register: _mesh_group_results
+      loop: "{{ _mgmt_groups }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Build mesh ID map from results
+      ansible.builtin.set_fact:
+        _mesh_id_map: >-
+          {{
+            dict(_mgmt_groups | zip(
+              _mesh_group_results.results | map(attribute='stdout') | map('trim') | list
+            ))
+          }}
+
+    - name: Fail if any mesh ID is empty
+      ansible.builtin.fail:
+        msg: "Could not get mesh ID for group '{{ item.key }}' — check MeshCentral connection"
+      when: item.value == ''
+      loop: "{{ _mesh_id_map | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Report device group IDs
+      ansible.builtin.debug:
+        msg: "Device group '{{ item.key }}': mesh ID {{ item.value }}"
+      loop: "{{ _mesh_id_map | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+
+- name: Remove stale nodes from MeshCentral device groups
+  hosts: mesh_central
+  gather_facts: false
+
+  tasks:
+    - name: Build expected {group_name -> [hostnames]} map from inventory
+      ansible.builtin.set_fact:
+        _expected_nodes: >-
+          {{
+            dict(
+              (_mesh_id_map | dict2items | map(attribute='key') | list) | zip(
+                (_mesh_id_map | dict2items | map(attribute='key') | list)
+                | map('extract', groups)
+                | list
+              )
+            )
+          }}
+
+    - name: Remove stale nodes from MeshCentral
+      ansible.builtin.command:
+        cmd: >
+          python3
+          {{ playbook_dir }}/scripts/cleanup-stale-mesh-nodes.py
+          https://{{ ansible_host }}
+          {{ hostvars['localhost']['mesh_central_config'].admin_username | default('admin') }}
+          {{ hostvars['localhost']['mesh_central_config'].admin_password }}
+          {{ _expected_nodes | to_json | quote }}
+      delegate_to: localhost
+      changed_when: false
+      no_log: true
+      register: _cleanup_result
+
+    - name: Report cleanup result
+      ansible.builtin.debug:
+        msg: "{{ _cleanup_result.stdout_lines }}"
+
+
+- name: Install MeshCentral agent on all mgmt_group_* hosts
+  hosts: "mgmt_group_*"
+  gather_facts: false
+  # Hosts with skip_ssh_check: true in config may be legitimately unreachable
+  # (e.g. Kairos VMs use a different SSH user; temporarily powered-off hosts).
+  # Log unreachable hosts but do not fail the play — agent install is retried
+  # on the next make run once the host is reachable.
+  ignore_unreachable: true
+
+  tasks:
+    - name: Determine this host's mgmt group
+      ansible.builtin.set_fact:
+        _host_mgmt_group: "{{ group_names | select('match', '^mgmt_group_') | list | first }}"
+
+    - name: Install MeshCentral agent
+      ansible.builtin.include_tasks: tasks/install-agent.yaml
+      vars:
+        _mc_admin_username: "{{ hostvars['localhost']['mesh_central_config'].admin_username | default('admin') }}"
+        _mc_admin_password: "{{ hostvars['localhost']['mesh_central_config'].admin_password }}"
+        _mesh_central_host: "{{ hostvars[groups['mesh_central'][0]]['ansible_host'] }}"
+        _mesh_id: "{{ hostvars[groups['mesh_central'][0]]['_mesh_id_map'][_host_mgmt_group] | default('') }}"
+        _device_group_name: "{{ _host_mgmt_group }}"
+
+
+- name: Configure Intel AMT credentials in MeshCentral for AMT-powered machines
+  hosts: mesh_central
+  gather_facts: false
+
+  tasks:
+    - name: Skip if no AMT machines configured
+      ansible.builtin.meta: end_play
+      when: (hostvars['localhost']['_amt_nodes'] | default([])) | length == 0
+
+    - name: Report AMT machines to configure
+      ansible.builtin.debug:
+        msg: "Configuring AMT credentials for: {{ hostvars['localhost']['_amt_nodes'] | map(attribute='hostname') | list }}"
+
+    - name: Configure AMT credentials in MeshCentral
+      ansible.builtin.command:
+        cmd: >
+          python3
+          {{ playbook_dir }}/scripts/configure-amt-credentials.py
+          https://{{ ansible_host }}
+          {{ hostvars['localhost']['mesh_central_config'].admin_username | default('admin') }}
+          {{ hostvars['localhost']['mesh_central_config'].admin_password }}
+          {{ hostvars['localhost']['_amt_nodes'] | to_json | quote }}
+      delegate_to: localhost
+      changed_when: false
+      no_log: true
+      register: _amt_result
+
+    - name: Report AMT credential configuration result
+      ansible.builtin.debug:
+        msg: "{{ _amt_result.stdout_lines }}"

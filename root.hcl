@@ -1,0 +1,1 @@
+infra/_framework-pkg/_framework/_git_root/root.hcl

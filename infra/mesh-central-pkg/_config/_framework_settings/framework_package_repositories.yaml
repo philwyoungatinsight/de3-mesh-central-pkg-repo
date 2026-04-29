@@ -1,0 +1,3 @@
+framework_package_repositories:
+  - name: de3-runner
+    url: https://github.com/philwyoungatinsight/de3-runner.git

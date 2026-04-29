@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(echo exit: $?:*)",
+      "Bash(jobs -l)",
+      "Bash(source set_env.sh)",
+      "Bash(sops --decrypt infra/pwy-home-lab-pkg/_config/pwy-home-lab-pkg_secrets.sops.yaml)",
+      "Bash(echo $SOPS_AGE_KEY_FILE)",
+      "Read(//home/pyoung/git/pwy-home-lab/**)",
+      "Bash(env)",
+      "Bash(SOPS_AGE_KEY_FILE=/home/pyoung/sops/age/keys.txt sops --decrypt infra/pwy-home-lab-pkg/_config/pwy-home-lab-pkg_secrets.sops.yaml)",
+      "Bash(echo \"exit $?\")",
+      "Bash(gpg --list-secret-keys)",
+      "Bash(sops --decrypt infra/pwy-home-lab-pkg/_config/pwy-home-lab-pkg_secrets.sops.yaml)",
+      "Bash(curl -sk --max-time 5 https://10.0.10.115:8006/api2/json/version)",
+      "Bash(chmod:*)",
+      "Bash(curl -s --max-time 5 http://10.0.10.105)",
+      "Bash(tee ~/make.log)",
+      "Bash(*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}
