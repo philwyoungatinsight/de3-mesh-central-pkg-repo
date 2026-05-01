@@ -11,11 +11,38 @@ mesh-central-pkg:
     test_ansible_playbook: mesh-central/vms-mesh-central-test
     update_inventory: true
   config_params:
-    mesh-central-pkg/_stack/proxmox/example-lab/pve-nodes/pve-1/vms/utils/mesh-central:
-      _unit_purpose: MeshCentral server VM on pve-1 (2 cores, 4 GB RAM, 99 GB disk). Hosts MeshCentral with Intel AMT ACM patches for out-of-band KVM console and power management of physical hosts.
+    # ---------------------------------------------------------------------------
+    # Example deployment — illustrates the required config structure.
+    # Copy to your deployment package (e.g. pwy-home-lab-pkg) and set real values.
+    # ---------------------------------------------------------------------------
+    mesh-central-pkg/_stack/proxmox/examples-archive:
+      _env: example
       _provider: proxmox
-      _browser_url: https://{ansible_host}
+      _skip_on_build: true
+      _region: example-lab
+      project_prefix: example
+
+    mesh-central-pkg/_stack/proxmox/examples-archive/example-lab/pve-nodes/pve-1:
+      _provider_proxmox_endpoint: https://10.0.10.115:8006   # replace with real PVE endpoint
+      ansible_host: 10.0.10.115   # replace with real PVE host IP
+      ansible_user: root
+      node_name: pve
+      datastore_iso: local
+      datastore_vm: local-zfs
+      network_bridge: vmbr0
+      cloud_init_user: ubuntu
+      cloud_init_ip_address: dhcp
+      agent_enabled: true
+      agent_timeout: 1m
+
+    mesh-central-pkg/_stack/proxmox/examples-archive/example-lab/pve-nodes/pve-1/vms/utils/mesh-central:
+      _unit_purpose: >
+        Example MeshCentral server VM on pve-1 (2 cores, 4 GB RAM, 99 GB disk).
+        Hosts MeshCentral with Intel AMT ACM patches for out-of-band KVM console and
+        power management of physical hosts. Copy to your deployment package and set
+        real Proxmox endpoint, IP address, and credentials.
       _wave: vms.proxmox.utility.mesh-central
+      _browser_url: https://10.0.10.x   # replace with real MeshCentral IP
       additional_tags:
       - role_mesh_central
       cpu_cores: 2
