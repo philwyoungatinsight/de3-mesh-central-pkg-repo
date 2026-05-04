@@ -1,3 +1,7 @@
 framework_package_repositories:
   - name: de3-framework-pkg-repo
     url: https://github.com/philwyoungatinsight/de3-framework-pkg-repo.git
+  - name: de3-proxmox-pkg-repo
+    url: https://github.com/philwyoungatinsight/de3-proxmox-pkg-repo.git
+  - name: de3-unifi-pkg-repo
+    url: https://github.com/philwyoungatinsight/de3-unifi-pkg-repo.git
