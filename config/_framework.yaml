@@ -1,2 +1,7 @@
 _framework:
   main_package: mesh-central-pkg
+  labels:
+    - name: _purpose
+      value: MeshCentral-based remote access and management server for lab machines
+    - name: _docs
+      value: https://github.com/philwyoungatinsight/de3-mesh-central-pkg-repo
